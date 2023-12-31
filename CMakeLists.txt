@@ -11,15 +11,15 @@
 
 cmake_minimum_required(VERSION 3.16)
 
-project(DiffRast LANGUAGES CUDA CXX)
+project(CudaDiffRast LANGUAGES CUDA CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_CUDA_STANDARD 14)
+set(CMAKE_CUDA_STANDARD 17)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 
-add_library(CudaRasterizer
+add_library(CudaDiffRasterizer
 	cuda_rasterizer/backward.h
 	cuda_rasterizer/backward.cu
 	cuda_rasterizer/forward.h
@@ -30,7 +30,21 @@ add_library(CudaRasterizer
 	cuda_rasterizer/rasterizer.h
 )
 
-set_target_properties(CudaRasterizer PROPERTIES CUDA_ARCHITECTURES "70;75;86")
+target_include_directories(CudaDiffRasterizer PRIVATE third_party/glm ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
 
-target_include_directories(CudaRasterizer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cuda_rasterizer)
-target_include_directories(CudaRasterizer PRIVATE third_party/glm ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+target_include_directories(CudaDiffRasterizer
+                           INTERFACE
+                            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+                            $<INSTALL_INTERFACE:include>
+                           )
+
+install(TARGETS
+        CudaDiffRasterizer
+    EXPORT CudaDiffRasterizerTargets
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+)
+install(FILES cuda_rasterizer/rasterizer.h DESTINATION include)
+install(EXPORT CudaDiffRasterizerTargets
+  FILE CudaDiffRasterizerConfig.cmake
+  DESTINATION ${CMAKE_INSTALL_PREFIX}/cmake
+)

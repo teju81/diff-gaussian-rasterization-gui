@@ -22,6 +22,9 @@ namespace FORWARD
 {
 	// Perform initial steps for each Gaussian prior to rasterization.
 	void preprocess(int P, int D, int M,
+		const int* indices,
+		const int* parent_indices,
+		const float* ts,
 		const float* orig_points,
 		const glm::vec3* scales,
 		const float scale_modifier,
@@ -56,6 +59,8 @@ namespace FORWARD
 		const uint2* ranges,
 		const uint32_t* point_list,
 		int W, int H,
+		const float* ts,
+		const int* kids,
 		const float2* points_xy_image,
 		const float* features,
 		const float4* conic_opacity,

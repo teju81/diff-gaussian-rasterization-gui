@@ -26,7 +26,7 @@ __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const 
 	glm::vec3 dir = pos - campos;
 	dir = dir / glm::length(dir);
 
-	glm::vec3* sh = ((glm::vec3*)shs) + idx * max_coeffs;
+	glm::vec3* sh = ((glm::vec3*)shs) + idx * max_coeffs; 
 	glm::vec3 result = SH_C0 * sh[0];
 
 	if (deg > 0)
@@ -64,9 +64,9 @@ __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const 
 
 	// RGB colors are clamped to positive values. If values are
 	// clamped, we need to keep track of this for the backward pass.
-	clamped[3 * idx + 0] = (result.x < 0);
-	clamped[3 * idx + 1] = (result.y < 0);
-	clamped[3 * idx + 2] = (result.z < 0);
+	//clamped[3 * idx + 0] = (result.x < 0);
+	//clamped[3 * idx + 1] = (result.y < 0);
+	//clamped[3 * idx + 2] = (result.z < 0);
 	return glm::max(result, 0.0f);
 }
 
@@ -107,8 +107,6 @@ __device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y,
 
 	// Apply low-pass filter: every Gaussian should be at least
 	// one pixel wide/high. Discard 3rd row and column.
-	cov[0][0] += 0.3f;
-	cov[1][1] += 0.3f;
 	return { float(cov[0][0]), float(cov[0][1]), float(cov[1][1]) };
 }
 
@@ -154,6 +152,9 @@ __device__ void computeCov3D(const glm::vec3 scale, float mod, const glm::vec4 r
 // Perform initial steps for each Gaussian prior to rasterization.
 template<int C>
 __global__ void preprocessCUDA(int P, int D, int M,
+	const int* indices,
+	const int* parent_indices,
+	const float* ts,
 	const float* orig_points,
 	const glm::vec3* scales,
 	const float scale_modifier,
@@ -182,49 +183,112 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float3 boxmin,
 	float3 boxmax)
 {
-	auto idx = cg::this_grid().thread_rank();
-	if (idx >= P)
+	auto t_idx = cg::this_grid().thread_rank();
+	if (t_idx >= P)
 		return;
+
+	int r_idx = indices == nullptr ? t_idx : indices[t_idx];
 
 	// Initialize radius and touched tiles to 0. If this isn't changed,
 	// this Gaussian will not be processed further.
-	radii[idx] = 0;
-	tiles_touched[idx] = 0;
+	radii[t_idx] = 0;
+	tiles_touched[t_idx] = 0;
+
+	int p_idx = 0;
+	float t = 0;
 
 	// Perform near culling, quit if outside.
-	float3 p_view;
-	if (!in_frustum(idx, orig_points, viewmatrix, projmatrix, prefiltered, p_view))
-		return;
+	float3 p_orig = { orig_points[3 * r_idx], orig_points[3 * r_idx + 1], orig_points[3 * r_idx + 2] };
 
-	// Transform point by projecting
-	float3 p_orig = { orig_points[3 * idx], orig_points[3 * idx + 1], orig_points[3 * idx + 2] };
+	if (parent_indices != nullptr)
+	{
+		p_idx = parent_indices[t_idx];
+		if (p_idx == -1)
+			parent_indices = nullptr; // be safe
+		else
+			t = ts[t_idx];
+	}
+
+	if (parent_indices != nullptr)
+	{
+		float3 pa_orig = { orig_points[3 * p_idx], orig_points[3 * p_idx + 1], orig_points[3 * p_idx + 2] };
+
+		p_orig = {
+			t * p_orig.x + (1.0f - t) * pa_orig.x,
+			t * p_orig.y + (1.0f - t) * pa_orig.y,
+			t * p_orig.z + (1.0f - t) * pa_orig.z
+		};
+	}
+
+	// Bring points to screen space
+	float4 p_hom = transformPoint4x4(p_orig, projmatrix);
+	float p_w = 1.0f / (p_hom.w + 0.0000001f);
+	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
+	float3 p_view = transformPoint4x3(p_orig, viewmatrix);
+
+	if (p_view.z <= 0.2f)
+		return;
 
 	if (p_orig.x < boxmin.x || p_orig.y < boxmin.y || p_orig.z < boxmin.z ||
 		p_orig.x > boxmax.x || p_orig.y > boxmax.y || p_orig.z > boxmax.z)
 		return;
 
-	float4 p_hom = transformPoint4x4(p_orig, projmatrix);
-	float p_w = 1.0f / (p_hom.w + 0.0000001f);
-	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
-
 	// If 3D covariance matrix is precomputed, use it, otherwise compute
 	// from scaling and rotation parameters. 
-	const float* cov3D;
+	float* cov3D;
 	if (cov3D_precomp != nullptr)
 	{
-		cov3D = cov3D_precomp + idx * 6;
+		//cov3D = cov3D_precomp + r_idx * 6;
 	}
 	else
 	{
-		computeCov3D(scales[idx], scale_modifier, rotations[idx], cov3Ds + idx * 6);
-		cov3D = cov3Ds + idx * 6;
+
+		//glm::vec3 scale = scales[r_idx];
+		//glm::vec4 rot = rotations[r_idx];
+		//computeCov3D(scale, scale_modifier, rot, cov3Ds + t_idx * 6);
+		//cov3D = cov3Ds + t_idx * 6;
+
+		//if (parent_indices != nullptr)
+		//{
+		//	float covex[6];
+		//	computeCov3D(scales[p_idx], scale_modifier, rotations[p_idx], covex);
+		//	for (int i = 0; i < 6; i++)
+		//	{
+		//		cov3D[i] = t * cov3D[i] + (1 - t) * covex[i];
+		//	}
+		//}
+
+		glm::vec3 scale = scales[r_idx];
+		glm::vec4 rot = rotations[r_idx];
+		if (parent_indices != nullptr)
+		{
+			scale = t * scale + (1.0f - t) * scales[p_idx];
+			glm::vec4 otherrot = rotations[p_idx];
+
+			float dot_product = glm::dot(rot, otherrot);
+			if (dot_product < 0.0)
+			{
+				otherrot = -otherrot;
+			}
+			rot = t * rot + (1.0f - t) * otherrot;
+		}
+		computeCov3D(scale, scale_modifier, rot, cov3Ds + t_idx * 6);
+		cov3D = cov3Ds + t_idx * 6;
 	}
 
 	// Compute 2D screen-space covariance matrix
 	float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix);
 
+	constexpr float h_var = 0.3f;
+	const float det_cov = cov.x * cov.z - cov.y * cov.y;
+	cov.x += h_var;
+	cov.z += h_var;
+	const float det_cov_plus_h_cov = cov.x * cov.z - cov.y * cov.y;
+	const float h_convolution_scaling = sqrt(max(0.000025f, det_cov / det_cov_plus_h_cov)); // max for numerical stability
+
 	// Invert covariance (EWA algorithm)
-	float det = (cov.x * cov.z - cov.y * cov.y);
+	const float det = det_cov_plus_h_cov;
+
 	if (det == 0.0f)
 		return;
 	float det_inv = 1.f / det;
@@ -249,7 +313,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	else // Slightly more aggressive, might need a math cleanup
 	{
 		const int2 my_rect = { (int)ceil(3.f * sqrt(cov.x)), (int)ceil(3.f * sqrt(cov.z)) };
-		rects[idx] = my_rect;
+		rects[t_idx] = my_rect;
 		getRect(point_image, my_rect, rect_min, rect_max, grid);
 	}
 
@@ -260,19 +324,28 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// spherical harmonics coefficients to RGB color.
 	if (colors_precomp == nullptr)
 	{
-		glm::vec3 result = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped);
-		rgb[idx * C + 0] = result.x;
-		rgb[idx * C + 1] = result.y;
-		rgb[idx * C + 2] = result.z;
+		glm::vec3 result = computeColorFromSH(r_idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped);
+
+		if (parent_indices != nullptr)
+		{
+			result = t * result + (1.0f - t) * computeColorFromSH(p_idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped);
+		}
+
+		rgb[t_idx * C + 0] = result.x;
+		rgb[t_idx * C + 1] = result.y;
+		rgb[t_idx * C + 2] = result.z;
 	}
 
 	// Store some useful helper data for the next steps.
-	depths[idx] = p_view.z;
-	radii[idx] = my_radius;
-	points_xy_image[idx] = point_image;
+	depths[t_idx] = p_view.z;
+	radii[t_idx] = my_radius;
+	points_xy_image[t_idx] = point_image;
 	// Inverse 2D covariance and opacity neatly pack into one float4
-	conic_opacity[idx] = { conic.x, conic.y, conic.z, opacities[idx] };
-	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
+	float opacity = opacities[r_idx];
+	if (parent_indices != nullptr)
+		opacity = t * opacity + (1.0f - t) * opacities[p_idx];
+	conic_opacity[t_idx] = { conic.x, conic.y, conic.z, opacity * h_convolution_scaling };
+	tiles_touched[t_idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
 }
 
 // Main rasterization method. Collaboratively works on one tile per
@@ -284,6 +357,8 @@ renderCUDA(
 	const uint2* __restrict__ ranges,
 	const uint32_t* __restrict__ point_list,
 	int W, int H,
+	const float* ts,
+	const int* kids,
 	const float2* __restrict__ points_xy_image,
 	const float* __restrict__ features,
 	const float4* __restrict__ conic_opacity,
@@ -360,7 +435,19 @@ renderCUDA(
 			// Obtain alpha by multiplying with Gaussian opacity
 			// and its exponential falloff from mean.
 			// Avoid numerical instabilities (see paper appendix). 
-			float alpha = min(0.99f, con_o.w * exp(power));
+			float my_alpha = min(0.99f, con_o.w * exp(power));
+			float alpha;
+			if (ts != nullptr && kids != nullptr)
+			{
+				float kidsqrt_alpha = 1.0f - pow(1.0f - my_alpha, 1.0f / kids[collected_id[j]]);
+				float t = ts[collected_id[j]];
+				alpha = t * my_alpha + (1.0f - t) * kidsqrt_alpha;
+			}
+			else
+			{
+				alpha = my_alpha;
+			}
+
 			if (alpha < 1.0f / 255.0f)
 				continue;
 			float test_T = T * (1 - alpha);
@@ -398,6 +485,8 @@ void FORWARD::render(
 	const uint2* ranges,
 	const uint32_t* point_list,
 	int W, int H,
+	const float* ts,
+	const int* kids,
 	const float2* means2D,
 	const float* colors,
 	const float4* conic_opacity,
@@ -410,6 +499,8 @@ void FORWARD::render(
 		ranges,
 		point_list,
 		W, H,
+		ts,
+		kids,
 		means2D,
 		colors,
 		conic_opacity,
@@ -420,6 +511,9 @@ void FORWARD::render(
 }
 
 void FORWARD::preprocess(int P, int D, int M,
+	const int* indices,
+	const int* parent_indices,
+	const float* ts,
 	const float* means3D,
 	const glm::vec3* scales,
 	const float scale_modifier,
@@ -450,6 +544,9 @@ void FORWARD::preprocess(int P, int D, int M,
 {
 	preprocessCUDA<NUM_CHANNELS> << <(P + 255) / 256, 256 >> > (
 		P, D, M,
+		indices,
+		parent_indices,
+		ts,
 		means3D,
 		scales,
 		scale_modifier,
