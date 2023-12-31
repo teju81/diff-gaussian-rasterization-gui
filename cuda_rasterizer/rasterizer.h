@@ -56,7 +56,8 @@ namespace CudaRasterizer
 			int* radii = nullptr,
 			int* rects = nullptr,
 			float* boxmin = nullptr,
-			float* boxmax = nullptr);
+			float* boxmax = nullptr,
+			bool debug = false);
 
 		static void backward(
 			const int P, int D, int M, int R,
@@ -65,6 +66,7 @@ namespace CudaRasterizer
 			const float* means3D,
 			const float* shs,
 			const float* colors_precomp,
+			const float* opacities,
 			const float* scales,
 			const float scale_modifier,
 			const float* rotations,
@@ -86,7 +88,8 @@ namespace CudaRasterizer
 			float* dL_dcov3D,
 			float* dL_dsh,
 			float* dL_dscale,
-			float* dL_drot);
+			float* dL_drot,
+			bool debug);
 	};
 };
 

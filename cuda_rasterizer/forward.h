@@ -32,6 +32,7 @@ namespace FORWARD
 		const float* opacities,
 		const float* shs,
 		bool* clamped,
+		bool* p_clamped,
 		const float* cov3D_precomp,
 		const float* colors_precomp,
 		const float* viewmatrix,

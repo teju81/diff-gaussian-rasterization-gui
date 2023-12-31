@@ -17,7 +17,7 @@ namespace cg = cooperative_groups;
 
 // Forward method for converting the input spherical harmonics
 // coefficients of each Gaussian to a simple RGB color.
-__device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, bool* clamped)
+__device__ glm::vec3 computeColorFromSH(int idx, int tidx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, bool* clamped)
 {
 	// The implementation is loosely based on code for 
 	// "Differentiable Point-Based Radiance Fields for 
@@ -64,9 +64,9 @@ __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const 
 
 	// RGB colors are clamped to positive values. If values are
 	// clamped, we need to keep track of this for the backward pass.
-	//clamped[3 * idx + 0] = (result.x < 0);
-	//clamped[3 * idx + 1] = (result.y < 0);
-	//clamped[3 * idx + 2] = (result.z < 0);
+	clamped[3 * tidx + 0] = (result.x < 0);
+	clamped[3 * tidx + 1] = (result.y < 0);
+	clamped[3 * tidx + 2] = (result.z < 0);
 	return glm::max(result, 0.0f);
 }
 
@@ -105,8 +105,6 @@ __device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y,
 
 	glm::mat3 cov = glm::transpose(T) * glm::transpose(Vrk) * T;
 
-	// Apply low-pass filter: every Gaussian should be at least
-	// one pixel wide/high. Discard 3rd row and column.
 	return { float(cov[0][0]), float(cov[0][1]), float(cov[1][1]) };
 }
 
@@ -162,6 +160,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	const float* opacities,
 	const float* shs,
 	bool* clamped,
+	bool* clamped_p,
 	const float* cov3D_precomp,
 	const float* colors_precomp,
 	const float* viewmatrix,
@@ -284,7 +283,10 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	cov.x += h_var;
 	cov.z += h_var;
 	const float det_cov_plus_h_cov = cov.x * cov.z - cov.y * cov.y;
+
+#ifdef DGR_FIX_AA
 	const float h_convolution_scaling = sqrt(max(0.000025f, det_cov / det_cov_plus_h_cov)); // max for numerical stability
+#endif 
 
 	// Invert covariance (EWA algorithm)
 	const float det = det_cov_plus_h_cov;
@@ -324,11 +326,11 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// spherical harmonics coefficients to RGB color.
 	if (colors_precomp == nullptr)
 	{
-		glm::vec3 result = computeColorFromSH(r_idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped);
+		glm::vec3 result = computeColorFromSH(r_idx, t_idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped);
 
 		if (parent_indices != nullptr)
 		{
-			result = t * result + (1.0f - t) * computeColorFromSH(p_idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped);
+			result = t * result + (1.0f - t) * computeColorFromSH(p_idx, t_idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped_p);
 		}
 
 		rgb[t_idx * C + 0] = result.x;
@@ -344,7 +346,13 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float opacity = opacities[r_idx];
 	if (parent_indices != nullptr)
 		opacity = t * opacity + (1.0f - t) * opacities[p_idx];
+
+#ifdef DGR_FIX_AA
 	conic_opacity[t_idx] = { conic.x, conic.y, conic.z, opacity * h_convolution_scaling };
+#else
+	conic_opacity[t_idx] = { conic.x, conic.y, conic.z, opacity };
+#endif
+
 	tiles_touched[t_idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
 }
 
@@ -521,6 +529,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	const float* opacities,
 	const float* shs,
 	bool* clamped,
+	bool* p_clamped,
 	const float* cov3D_precomp,
 	const float* colors_precomp,
 	const float* viewmatrix,
@@ -554,6 +563,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		opacities,
 		shs,
 		clamped,
+		p_clamped,
 		cov3D_precomp,
 		colors_precomp,
 		viewmatrix, 
